@@ -1,0 +1,43 @@
+{
+  "server": "https://192.168.50.181:8443/api/report",
+  "output_file": "client_bot_report.json",
+  "tls": {
+    "ca_cert": "../certs/ca.crt",
+    "client_cert": "",
+    "client_key": "",
+    "insecure": false
+  },
+  "security": {
+    "token": "CHANGE_ME_STRONG_SECRET_TOKEN",
+    "use_hmac": true
+  },
+  "schedule": {
+    "interval": 60,
+    "workers": 6,
+    "disk_workers": 3,
+    "disk_every": 3600,
+    "disk_timeout": 300,
+    "disk_once_wait": 15,
+    "slow_meta_every": 300,
+    "cpu_sample_sec": 1.0,
+    "home_dir": "/home"
+  },
+  "thresholds": {
+    "cpu_pct": 400.0,
+    "mem_gb": 32.0,
+    "gpu_mb": 8000,
+    "gpu_idle_minutes": 60,
+    "zombies": 5,
+    "disk_gb": 200.0,
+    "inactive_days": 90
+  },
+  "jupyterhub": {
+    "url": "",
+    "token": "",
+    "idle_hours": 24.0
+  },
+  "http": {
+    "timeout": 15,
+    "retries": 3
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "host": "0.0.0.0",
+  "port": 8443,
+  "db": "monitor.db",
+  "tls": {
+    "enabled": true,
+    "cert": "certs/server.crt",
+    "key": "certs/server.key",
+    "ca_cert": "certs/ca.crt",
+    "require_client_cert": false
+  },
+  "security": {
+    "token": "CHANGE_ME_STRONG_SECRET_TOKEN",
+    "require_hmac": true,
+    "hmac_max_skew": 300,
+    "admin_password": "CHANGE_ME_ADMIN_PASSWORD"
+  },
+  "storage": {
+    "stale_seconds": 180,
+    "retain_days": 14,
+    "max_per_host": 10000
+  },
+  "import_files": []
+}

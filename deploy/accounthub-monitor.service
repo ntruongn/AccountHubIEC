@@ -1,0 +1,14 @@
+[Unit]
+Description=AccountHubIEC Monitor Web Application (Config-Driven HTTPS + HMAC)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/iec-project/AccountHubIEC
+ExecStart=/usr/bin/python3 /home/iec-project/AccountHubIEC/server.py --config /home/iec-project/AccountHubIEC/server_config.json
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
