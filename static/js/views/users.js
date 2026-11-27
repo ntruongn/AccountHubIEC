@@ -25,6 +25,7 @@ export function renderUsersView(root, ctx) {
   }
 
   const rep = latest.report;
+  const ownerMap = latest.owner_map || {};
   const users = rep.users || [];
   const online = rep.online_now || [];
   const hubs = rep.jupyterhub || [];
@@ -102,9 +103,13 @@ export function renderUsersView(root, ctx) {
                     const diskHtml = u.disk_mb == null
                       ? `<span class="mono-muted" title="Chạy client_bot.py bằng sudo để đo du -sm đầy đủ">N/A (cần sudo)</span>`
                       : `<strong>${fmtMB(u.disk_mb)}</strong>`;
+                    const owner = ownerMap[u.username];
+                    const ownerHtml = owner
+                      ? `<div class="muted-sm" style="margin-top:2px;color:var(--info-text)">${esc(owner.group_name || owner.account_type)}${owner.members?.length ? ` · ${esc(owner.members.map((m) => `${m.full_name}${m.student_id ? ` (${m.student_id})` : ""}`).join(", "))}` : ""}</div>`
+                      : `<div class="muted-sm"><a href="#/registry" style="color:var(--fg-subtle);text-decoration:none">Chưa gán chủ →</a></div>`;
                     return `
                       <tr>
-                        <td class="mono"><strong>${esc(u.username)}</strong><div class="muted-sm">${esc(u.home)}</div></td>
+                        <td class="mono"><strong>${esc(u.username)}</strong><div class="muted-sm">${esc(u.home)}</div>${ownerHtml}</td>
                         <td class="num">${badge}</td>
                         <td class="num">${diskHtml}</td>
                         <td class="mono-muted" style="font-size:11.5px">${esc(u.last_login || "Never logged in")}</td>

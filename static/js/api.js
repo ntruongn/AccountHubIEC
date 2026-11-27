@@ -58,6 +58,7 @@ export class LiveStream {
       es.addEventListener("report", (ev) => this.onEvent("report", JSON.parse(ev.data)));
       es.addEventListener("alert_ack", (ev) => this.onEvent("alert_ack", JSON.parse(ev.data)));
       es.addEventListener("host_deleted", (ev) => this.onEvent("host_deleted", JSON.parse(ev.data)));
+      es.addEventListener("registry_updated", (ev) => this.onEvent("registry_updated", JSON.parse(ev.data)));
       es.onerror = () => {
         if (!this.closed) this.onStatus("stale", "SSE đang kết nối lại...");
       };

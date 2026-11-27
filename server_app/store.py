@@ -28,6 +28,11 @@ DEFAULT_SETTINGS = {
     "webhook_enabled": False,
     "webhook_url": "",
     "webhook_min_severity": "warning",
+    "email_auto_enabled": False,
+    "email_min_severity": "warning",
+    "email_cooldown_minutes": 240,
+    "email_cc_admin": True,
+    "email_admin_emails": "",
     "stale_seconds": 180,
     "retain_days": 14,
 }
@@ -265,13 +270,13 @@ class MonitorStore:
         for k, v in updates.items():
             if k not in allowed:
                 continue
-            if k in ("stale_seconds", "retain_days"):
+            if k in ("stale_seconds", "retain_days", "email_cooldown_minutes"):
                 cleaned[k] = max(1, int(v))
-            elif k == "webhook_enabled":
+            elif k in ("webhook_enabled", "email_auto_enabled", "email_cc_admin"):
                 cleaned[k] = bool(v)
-            elif k == "webhook_min_severity":
+            elif k in ("webhook_min_severity", "email_min_severity"):
                 cleaned[k] = v if v in ("info", "warning", "critical") else "warning"
-            elif k == "webhook_url":
+            elif k in ("webhook_url", "email_admin_emails"):
                 cleaned[k] = str(v or "").strip()
 
         with self._lock, self._connect() as conn:
@@ -387,14 +392,20 @@ class MonitorStore:
             )
 
             new_alerts = self._sync_alert_events_locked(conn, summary["host"], parsed_alerts, now_iso)
+            acked_fps = {
+                r["fingerprint"]
+                for r in conn.execute("SELECT fingerprint FROM alert_acks WHERE host = ?", (summary["host"],)).fetchall()
+            }
             self._prune_host_locked(conn, summary["host"])
 
+        unacked_alerts = [a for a in parsed_alerts if a["fingerprint"] not in acked_fps]
         return {
             "id": report_id,
             "host": summary["host"],
             "received_at": now_iso,
             "alerts_count": summary["alerts_count"],
             "new_alerts": new_alerts,
+            "unacked_alerts": unacked_alerts,
         }
 
     def _sync_alert_events_locked(

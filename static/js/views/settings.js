@@ -4,10 +4,12 @@ import { copyText, esc, fmtAge, statusLabel } from "../format.js";
 
 export async function renderSettingsView(root, ctx) {
   let settings = {};
+  let smtp = {};
   let meta = { bot_auth_enabled: false, ui_auth_enabled: false };
   try {
     const res = await api("/api/settings");
     settings = res.settings || {};
+    smtp = res.smtp || {};
     meta = res;
   } catch (err) {
     root.innerHTML = `<div class="card"><p class="field-error">Không tải được cấu hình: ${esc(err.message)}</p></div>`;
@@ -109,24 +111,62 @@ WantedBy=multi-user.target`;
         <section class="card">
           <div class="card-head">
             <div>
-              <h3 class="card-title">Cảnh báo Webhook &amp; Lưu trữ</h3>
-              <p class="card-sub">Tự động gửi thông báo tới Discord, Slack hoặc Webhook HTTP khi có cảnh báo mới</p>
+              <h3 class="card-title">Email Cảnh báo tự động (SMTP) &amp; Webhook</h3>
+              <p class="card-sub">Liên kết email chủ tài khoản trong sổ quản lý để gửi cảnh báo và yêu cầu xử lý</p>
             </div>
+            <span class="badge ${smtp.smtp_configured ? "badge-ok" : "badge-warn"}">
+              SMTP: ${smtp.smtp_configured ? `${esc(smtp.smtp_host)}:${smtp.smtp_port}` : "Chưa bật trong server_config.json"}
+            </span>
           </div>
           <form id="settings-form">
+            <div class="item-box" style="margin-bottom:12px">
+              <div class="row-between" style="margin-bottom:8px">
+                <label class="checkbox-pill">
+                  <input type="checkbox" id="set-mail-auto" ${settings.email_auto_enabled ? "checked" : ""}>
+                  <span>Tự động gửi Email khi có cảnh báo</span>
+                </label>
+                <label class="checkbox-pill">
+                  <input type="checkbox" id="set-mail-cc" ${settings.email_cc_admin !== false ? "checked" : ""}>
+                  <span>CC quản trị</span>
+                </label>
+              </div>
+              <div class="grid-2" style="margin-bottom:8px">
+                <div class="field" style="margin-bottom:0">
+                  <label for="set-mail-admin">Email Quản trị (nhận cảnh báo hệ thống / CC)</label>
+                  <input type="text" id="set-mail-admin" class="input mono" value="${esc(settings.email_admin_emails || (smtp.default_admin_emails || []).join(", "))}" placeholder="admin@uni.edu.vn">
+                </div>
+                <div class="grid-2" style="margin-bottom:0">
+                  <div class="field" style="margin-bottom:0">
+                    <label for="set-mail-sev">Mức tối thiểu</label>
+                    <select id="set-mail-sev" class="select">
+                      ${["info", "warning", "critical"].map((s) => `<option value="${s}" ${(settings.email_min_severity || "warning") === s ? "selected" : ""}>${s.toUpperCase()}</option>`).join("")}
+                    </select>
+                  </div>
+                  <div class="field" style="margin-bottom:0">
+                    <label for="set-mail-cd">Cooldown (phút)</label>
+                    <input type="number" id="set-mail-cd" class="input mono" min="5" value="${Number(settings.email_cooldown_minutes || 240)}">
+                  </div>
+                </div>
+              </div>
+              <div class="row-between">
+                <span class="muted-sm">Thông số SMTP (host/user/app-password) khai báo an toàn trong <code>server_config.json</code>.</span>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-test-mail">Gửi email thử (Test SMTP)</button>
+              </div>
+            </div>
+
             <div class="field">
               <label class="checkbox-pill" style="width:fit-content">
                 <input type="checkbox" id="set-wh-enabled" ${settings.webhook_enabled ? "checked" : ""}>
-                <span>Bật gửi Webhook tự động</span>
+                <span>Bật gửi Webhook tự động (Discord / Slack / HTTP)</span>
               </label>
             </div>
             <div class="field">
-              <label for="set-wh-url">Webhook URL (Discord / Slack / HTTP)</label>
+              <label for="set-wh-url">Webhook URL</label>
               <input type="url" id="set-wh-url" class="input mono" value="${esc(settings.webhook_url || "")}" placeholder="https://discord.com/api/webhooks/...">
             </div>
             <div class="grid-3" style="margin-bottom:12px">
               <div class="field" style="margin-bottom:0">
-                <label for="set-wh-sev">Mức tối thiểu</label>
+                <label for="set-wh-sev">Mức Webhook</label>
                 <select id="set-wh-sev" class="select">
                   ${["info", "warning", "critical"].map((s) => `<option value="${s}" ${settings.webhook_min_severity === s ? "selected" : ""}>${s.toUpperCase()}</option>`).join("")}
                 </select>
@@ -228,6 +268,11 @@ WantedBy=multi-user.target`;
   root.querySelector("#settings-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const payload = {
+      email_auto_enabled: root.querySelector("#set-mail-auto").checked,
+      email_cc_admin: root.querySelector("#set-mail-cc").checked,
+      email_admin_emails: root.querySelector("#set-mail-admin").value.trim(),
+      email_min_severity: root.querySelector("#set-mail-sev").value,
+      email_cooldown_minutes: Number(root.querySelector("#set-mail-cd").value || 240),
       webhook_enabled: root.querySelector("#set-wh-enabled").checked,
       webhook_url: root.querySelector("#set-wh-url").value.trim(),
       webhook_min_severity: root.querySelector("#set-wh-sev").value,
@@ -242,6 +287,17 @@ WantedBy=multi-user.target`;
       }
     } catch (err) {
       ctx.toast(`Lỗi lưu cấu hình: ${err.message}`, "err");
+    }
+  });
+
+  // Test SMTP Email
+  root.querySelector("#btn-test-mail")?.addEventListener("click", async () => {
+    const to = root.querySelector("#set-mail-admin").value.trim();
+    try {
+      const res = await runWrite(() => apiPost("/api/email/test", { to }));
+      if (res) ctx.toast(`Email test OK (${res.detail})`, "ok");
+    } catch (err) {
+      ctx.toast(`Gửi email test thất bại: ${err.message}`, "err");
     }
   });
 

@@ -15,6 +15,21 @@
     "hmac_max_skew": 300,
     "admin_password": "CHANGE_ME_ADMIN_PASSWORD"
   },
+  "smtp": {
+    "enabled": false,
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "use_tls": true,
+    "use_ssl": false,
+    "username": "lab-monitor@example.com",
+    "password": "CHANGE_ME_APP_PASSWORD",
+    "from_email": "AccountHubIEC Monitor <lab-monitor@example.com>",
+    "admin_emails": ["admin@example.com"],
+    "cc_admin": true,
+    "auto_send": false,
+    "auto_min_severity": "warning",
+    "cooldown_minutes": 240
+  },
   "storage": {
     "stale_seconds": 180,
     "retain_days": 14,

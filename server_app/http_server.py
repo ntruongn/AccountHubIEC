@@ -14,6 +14,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .auth import AuthManager
 from .config import STATIC_DIR, AppConfig
+from .mailer import EmailService, draft_account_email, draft_alert_email, link_alert_owner
+from .registry import AccountRegistry
 from .sse import EventBroker
 from .store import MonitorStore, utc_now_iso
 from .webhooks import dispatch_alerts_async, send_webhook_sync
@@ -42,6 +44,8 @@ class MonitorWebServer(ThreadingHTTPServer):
         super().__init__((config.host, config.port), MonitorHandler)
         self.config = config
         self.store = store
+        self.registry = AccountRegistry(store)
+        self.mailer = EmailService(store, config.smtp)
         self.auth = auth
         self.broker = broker
         self.started_at = utc_now_iso()
@@ -249,7 +253,31 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/alerts":
-                self._send_json({"alerts": self.server.store.get_all_alerts(), "now": utc_now_iso()})
+                raw_alerts = self.server.store.get_all_alerts()
+                owner_cache: dict[str, dict[str, dict]] = {}
+                enriched = []
+                for a in raw_alerts:
+                    h = a["host"]
+                    if h not in owner_cache:
+                        owner_cache[h] = self.server.registry.get_owner_map(h)
+                    enriched.append(link_alert_owner(a, owner_cache[h]))
+                self._send_json(
+                    {
+                        "alerts": enriched,
+                        "smtp_configured": self.server.mailer.configured,
+                        "now": utc_now_iso(),
+                    }
+                )
+                return
+
+            if path == "/api/email/logs":
+                limit = max(10, min(300, int(qs.get("limit", ["80"])[0])))
+                self._send_json(
+                    {
+                        "logs": self.server.mailer.list_logs(limit=limit),
+                        "smtp": self.server.mailer.public_status(),
+                    }
+                )
                 return
 
             if path == "/api/alerts/events":
@@ -263,6 +291,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     {
                         "settings": self.server.store.get_settings(),
+                        "smtp": self.server.mailer.public_status(),
                         "bot_auth_enabled": self.server.auth.bot_auth_enabled,
                         "ui_auth_enabled": self.server.auth.ui_auth_enabled,
                         "tls_enabled": self.server.config.tls_enabled,
@@ -271,6 +300,44 @@ class MonitorHandler(BaseHTTPRequestHandler):
                     }
                 )
                 return
+
+            # ---- Account & Research Group Registry APIs ----
+            if path == "/api/registry/accounts":
+                host_filter = qs.get("host", [None])[0]
+                self._send_json(self.server.registry.list_accounts(host=host_filter))
+                return
+
+            if path == "/api/registry/template-csv":
+                csv_text = self.server.registry.template_csv()
+                self._send_bytes(
+                    csv_text.encode("utf-8"),
+                    "text/csv; charset=utf-8",
+                    HTTPStatus.OK,
+                    {"Content-Disposition": 'attachment; filename="accounthub_accounts_template.csv"', "Cache-Control": "no-store"},
+                )
+                return
+
+            if path == "/api/registry/export-csv":
+                host_filter = qs.get("host", [None])[0]
+                csv_text = self.server.registry.export_csv(host=host_filter)
+                fname = f"managed_accounts_{host_filter}.csv" if host_filter else "managed_accounts_all.csv"
+                self._send_bytes(
+                    csv_text.encode("utf-8"),
+                    "text/csv; charset=utf-8",
+                    HTTPStatus.OK,
+                    {"Content-Disposition": f'attachment; filename="{fname}"', "Cache-Control": "no-store"},
+                )
+                return
+
+            if path.startswith("/api/registry/accounts/"):
+                acc_id_raw = path[len("/api/registry/accounts/") :].strip("/")
+                if acc_id_raw.isdigit():
+                    acc = self.server.registry.get_account(int(acc_id_raw))
+                    if not acc:
+                        self._send_json({"error": "Account not found"}, HTTPStatus.NOT_FOUND)
+                        return
+                    self._send_json(acc)
+                    return
 
             if path.startswith("/api/hosts/"):
                 parts = [unquote(p) for p in path[len("/api/hosts/") :].strip("/").split("/")]
@@ -283,6 +350,9 @@ class MonitorHandler(BaseHTTPRequestHandler):
                     if not data:
                         self._send_json({"error": "Host or snapshot not found"}, HTTPStatus.NOT_FOUND)
                         return
+                    owner_map = self.server.registry.get_owner_map(host)
+                    data["owner_map"] = owner_map
+                    data["parsed_alerts"] = [link_alert_owner(a, owner_map) for a in data["parsed_alerts"]]
                     self._send_json(data)
                     return
 
@@ -374,8 +444,18 @@ class MonitorHandler(BaseHTTPRequestHandler):
                     "received_at": res["received_at"],
                 },
             )
+            settings_now = self.server.store.get_settings()
             if res["new_alerts"]:
-                dispatch_alerts_async(self.server.store.get_settings(), res["host"], res["new_alerts"])
+                dispatch_alerts_async(settings_now, res["host"], res["new_alerts"])
+            if res["unacked_alerts"]:
+                owner_map = self.server.registry.get_owner_map(res["host"])
+                self.server.mailer.dispatch_alert_emails_async(
+                    res["host"],
+                    res["unacked_alerts"],
+                    owner_map,
+                    settings_now,
+                    registry=self.server.registry,
+                )
             self._send_json(
                 {
                     "ok": True,
@@ -497,12 +577,179 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "host": parts[0]})
                 return
 
+        # ---- Email Alert & Action Request APIs ----
+        if path == "/api/email/draft":
+            if self._require_ui_auth() is None:
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            if payload.get("account_id"):
+                acc = self.server.registry.get_account(int(payload["account_id"]))
+                if not acc:
+                    self._send_json({"error": "Account not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                draft = draft_account_email(
+                    acc,
+                    kind=str(payload.get("kind") or "general"),
+                    custom_request=str(payload.get("custom_request") or ""),
+                )
+                self._send_json({"ok": True, "draft": draft, "smtp_configured": self.server.mailer.configured})
+                return
+
+            host = str(payload.get("host") or "").strip()
+            alert = payload.get("alert") or {}
+            owner_map = self.server.registry.get_owner_map(host) if host else {}
+            linked = link_alert_owner(alert, owner_map)
+            draft = draft_alert_email(
+                host,
+                linked,
+                owner=linked.get("owner"),
+                custom_request=str(payload.get("custom_request") or ""),
+            )
+            settings_now = self.server.store.get_settings()
+            admin_cc = settings_now.get("email_admin_emails") or ", ".join(self.server.config.smtp.admin_emails)
+            self._send_json(
+                {
+                    "ok": True,
+                    "draft": draft,
+                    "default_cc": admin_cc if settings_now.get("email_cc_admin", True) else "",
+                    "owner": linked.get("owner"),
+                    "smtp_configured": self.server.mailer.configured,
+                }
+            )
+            return
+
+        if path == "/api/email/send":
+            if self._require_ui_auth() is None:
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            to_emails = payload.get("to")
+            cc_emails = payload.get("cc")
+            subject = str(payload.get("subject") or "").strip()
+            body_text = str(payload.get("body_text") or "").strip()
+            body_html = payload.get("body_html")
+            if not subject or not body_text:
+                self._send_json({"error": "Thiếu tiêu đề hoặc nội dung email"}, HTTPStatus.BAD_REQUEST)
+                return
+            ok, detail = self.server.mailer.send_email_sync(
+                to_emails,
+                subject,
+                body_text,
+                body_html=body_html,
+                cc_emails=cc_emails,
+                host=str(payload.get("host") or ""),
+                username=str(payload.get("username") or ""),
+                alert_tag=str(payload.get("alert_tag") or ""),
+                fingerprint=str(payload.get("fingerprint") or ""),
+                mode="manual",
+                registry=self.server.registry,
+                account_id=int(payload["account_id"]) if payload.get("account_id") else None,
+            )
+            status = HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY
+            self._send_json({"ok": ok, "detail": detail}, status)
+            return
+
+        if path == "/api/email/test":
+            if not self._require_write_auth():
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            to_val = payload.get("to") or self.server.store.get_settings().get("email_admin_emails") or self.server.config.smtp.admin_emails
+            ok, detail = self.server.mailer.send_email_sync(
+                to_val,
+                "[AccountHubIEC] Kiểm tra kết nối gửi Email SMTP",
+                "Xin chào,\n\nĐây là email kiểm tra cấu hình SMTP từ hệ thống giám sát & quản lý tài khoản AccountHubIEC.\nKết nối đã hoạt động thành công!\n",
+                alert_tag="TEST",
+                mode="test",
+            )
+            status = HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY
+            self._send_json({"ok": ok, "detail": detail}, status)
+            return
+
+        # ---- Account Registry Write APIs ----
+        if path == "/api/registry/accounts":
+            if self._require_ui_auth() is None:
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            try:
+                acc = self.server.registry.upsert_account(payload)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.server.broker.publish("registry_updated", {"id": acc["id"], "host": acc["host"]})
+            self._send_json({"ok": True, "account": acc})
+            return
+
+        if path == "/api/registry/sync":
+            if self._require_ui_auth() is None:
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            host_arg = (str(payload.get("host") or "").strip()) or None
+            res = self.server.registry.sync_from_hosts(host=host_arg)
+            self.server.broker.publish("registry_updated", res)
+            self._send_json({"ok": True, **res})
+            return
+
+        if path == "/api/registry/import-csv":
+            if self._require_ui_auth() is None:
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            try:
+                res = self.server.registry.import_csv(str(payload.get("csv") or ""))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.server.broker.publish("registry_updated", res)
+            self._send_json({"ok": True, **res})
+            return
+
+        if path.startswith("/api/registry/accounts/") and path.endswith("/actions"):
+            if self._require_ui_auth() is None:
+                return
+            parts = path[len("/api/registry/accounts/") :].strip("/").split("/")
+            if len(parts) == 2 and parts[0].isdigit() and parts[1] == "actions":
+                payload = self._read_json_body()
+                if payload is None:
+                    return
+                acc = self.server.registry.apply_lifecycle_action(int(parts[0]), payload)
+                if not acc:
+                    self._send_json({"error": "Account not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                self.server.broker.publish("registry_updated", {"id": acc["id"], "host": acc["host"]})
+                self._send_json({"ok": True, "account": acc})
+                return
+
         self._send_json({"error": "API endpoint not found"}, HTTPStatus.NOT_FOUND)
 
     # ------------------------------------------------------------ DELETE
     def do_DELETE(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path.startswith("/api/registry/accounts/"):
+            if self._require_ui_auth() is None:
+                return
+            acc_id_raw = path[len("/api/registry/accounts/") :].strip("/")
+            if not acc_id_raw.isdigit():
+                self._send_json({"error": "Invalid account id"}, HTTPStatus.BAD_REQUEST)
+                return
+            deleted = self.server.registry.delete_account(int(acc_id_raw))
+            if not deleted:
+                self._send_json({"error": "Account not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.server.broker.publish("registry_updated", {"deleted_id": int(acc_id_raw)})
+            self._send_json({"ok": True, "deleted": int(acc_id_raw)})
+            return
 
         if path.startswith("/api/hosts/"):
             if not self._require_write_auth():

@@ -12,42 +12,42 @@ def build_alerts(report: dict, cfg: ClientConfig) -> list[str]:
             alerts.append(f"[HEAVY] {u['username']}: " + "; ".join(u.get("heavy_reasons") or []))
         if (u.get("gpu_idle_mb") or 0) > 0:
             alerts.append(
-                f"[GPU-IDLE] {u['username']} giu {u['gpu_idle_mb']}MB VRAM nhung "
-                f"CPU ~0 (PID {u.get('gpu_idle_pids') or []}) - co the da bo quen"
+                f"[GPU-IDLE] {u['username']} giữ {u['gpu_idle_mb']}MB VRAM nhưng "
+                f"CPU ~0 (PID {u.get('gpu_idle_pids') or []}) - có thể đã bỏ quên"
             )
         if (u.get("zombies") or 0) >= cfg.zombie_threshold:
-            alerts.append(f"[ZOMBIE] {u['username']} co {u['zombies']} tien trinh zombie")
+            alerts.append(f"[ZOMBIE] {u['username']} có {u['zombies']} tiến trình zombie")
 
     for usr in report.get("users") or []:
         d = usr.get("days_inactive")
         disk = usr.get("disk_mb")
         if disk is not None and disk >= cfg.disk_threshold_gb * 1024:
-            alerts.append(f"[DISK] {usr['username']} dung {disk / 1024:.1f}GB")
+            alerts.append(f"[DISK] {usr['username']} đang dùng {disk / 1024:.1f}GB")
         if d is not None and d >= cfg.inactive_days and disk is not None and disk > 1024:
             alerts.append(
-                f"[INACTIVE] {usr['username']} {d} ngay khong dang nhap, van chiem {disk / 1024:.1f}GB"
+                f"[INACTIVE] {usr['username']} đã {d} ngày không đăng nhập, vẫn chiếm {disk / 1024:.1f}GB"
             )
 
     sys_info = report.get("system") or {}
     for dk in sys_info.get("disks") or []:
         if (dk.get("used_pct") or 0) >= 90:
-            alerts.append(f"[DISK-FULL] {dk['mount']} dung {dk['used_pct']}%")
+            alerts.append(f"[DISK-FULL] {dk['mount']} đang dùng {dk['used_pct']}%")
 
     svc = sys_info.get("jupyterhub_service") or "unknown"
     if svc not in ("active", "unknown"):
-        alerts.append(f"[SERVICE] jupyterhub: {svc}")
+        alerts.append(f"[SERVICE] dịch vụ jupyterhub: {svc}")
 
     for g in report.get("gpus") or []:
         if g.get("temp_c") is not None and g["temp_c"] >= 85:
-            alerts.append(f"[GPU-TEMP] GPU{g['index']} {g['temp_c']}C")
+            alerts.append(f"[GPU-TEMP] GPU{g['index']} nhiệt độ cao {g['temp_c']}°C")
 
     xids = report.get("gpu_xid_errors") or []
     if xids:
-        alerts.append(f"[GPU-XID] {len(xids)} loi Xid gan day trong dmesg")
+        alerts.append(f"[GPU-XID] {len(xids)} lỗi Xid gần đây trong dmesg")
 
     for h in report.get("jupyterhub") or []:
         if h.get("server_running") and (h.get("idle_hours") or 0) >= cfg.hub_idle_hours:
-            alerts.append(f"[HUB-IDLE] {h['name']} server chay nhung idle {h['idle_hours']}h")
+            alerts.append(f"[HUB-IDLE] {h['name']} server đang chạy nhưng không hoạt động {h['idle_hours']} giờ")
 
     return alerts
 

@@ -5,6 +5,7 @@ import { renderAccountsView } from "./views/accounts.js";
 import { renderAlertsView } from "./views/alerts.js";
 import { renderFleetView } from "./views/fleet.js";
 import { renderHostView } from "./views/host.js";
+import { renderRegistryView } from "./views/registry.js";
 import { renderSettingsView } from "./views/settings.js";
 import { renderUsersView } from "./views/users.js";
 
@@ -15,8 +16,9 @@ const ROUTE_META = {
   host: ["Chi tiết Máy chủ", "CPU, RAM, GPU, Ổ đĩa & Time-Travel Snapshot"],
   accounts: ["Tài nguyên & Tiến trình", "Phân tích sử dụng tài nguyên theo tài khoản"],
   users: ["Tài khoản /home & Hub", "Kiểm toán user không hoạt động, disk và JupyterHub"],
+  registry: ["Quản lý Tài khoản & Nhóm", "Key Members, Nhóm sinh viên (1–3+ SV), đồng bộ cũ & vòng đời"],
   alerts: ["Trung tâm Cảnh báo", "Cảnh báo đang hoạt động & nhật ký sự cố"],
-  settings: ["Cài đặt & Triển khai", "Kết nối client_bot.py, Webhook và quản lý dữ liệu"],
+  settings: ["Cài đặt & Triển khai", "Kết nối client/config.json, Webhook và quản lý dữ liệu"],
 };
 
 const app = {
@@ -32,7 +34,25 @@ const app = {
   authMeta: { ui_auth_enabled: false, bot_auth_enabled: false, authenticated: true },
   stream: null,
   refreshDebounce: null,
+  pendingRender: false,
 };
+
+function hasOpenModal() {
+  const portal = $("modal-portal");
+  return Boolean(portal && portal.querySelector(".modal-backdrop")) ||
+    Boolean(document.querySelector("#view-root .modal-backdrop"));
+}
+
+function isUserTypingInView() {
+  const el = document.activeElement;
+  const root = $("view-root");
+  if (!el || !root || !root.contains(el)) return false;
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
+}
+
+function isUserBusy() {
+  return hasOpenModal() || isUserTypingInView();
+}
 
 function toast(msg, kind = "ok") {
   const box = $("toast-region");
@@ -85,6 +105,9 @@ function syncChrome() {
   const alBadge = $("nav-count-alerts");
   alBadge.textContent = activeAlerts;
   alBadge.classList.toggle("has-items", activeAlerts > 0);
+  if ($("nav-count-registry")) {
+    $("nav-count-registry").textContent = app.registryCount ?? 0;
+  }
 
   // Sidebar Host List
   const sideList = $("sidebar-host-list");
@@ -117,11 +140,16 @@ function syncChrome() {
 }
 
 // --- Data Fetching ---
-async function refreshData(silent = false) {
+async function refreshData(silent = false, forceRender = false) {
   try {
-    const [fleetRes, alertsRes] = await Promise.all([api("/api/fleet"), api("/api/alerts")]);
+    const [fleetRes, alertsRes, regRes] = await Promise.all([
+      api("/api/fleet"),
+      api("/api/alerts"),
+      api("/api/registry/accounts").catch(() => ({ summary: { total: 0 } })),
+    ]);
     app.fleet = fleetRes;
     app.alerts = alertsRes.alerts || [];
+    app.registryCount = regRes?.summary?.total ?? 0;
 
     const hosts = fleetRes.hosts || [];
     if (hosts.length === 0) {
@@ -148,6 +176,13 @@ async function refreshData(silent = false) {
     }
 
     syncChrome();
+
+    // Never wipe out an open popup/modal or active form input during background SSE/timer updates
+    if (silent && !forceRender && isUserBusy()) {
+      app.pendingRender = true;
+      return;
+    }
+    app.pendingRender = false;
     renderActiveView();
   } catch (err) {
     if (err.status === 401) {
@@ -169,13 +204,18 @@ function renderActiveView() {
     selectedHost: app.selectedHost,
     snapshotId: app.snapshotId,
     historyHours: app.historyHours,
+    modalRoot: $("modal-portal"),
     toast,
     navigate,
-    refresh: () => refreshData(false),
+    refresh: () => refreshData(false, true),
+    refreshRegistryBadge: () => api("/api/registry/accounts").then((r) => {
+      app.registryCount = r?.summary?.total ?? 0;
+      if ($("nav-count-registry")) $("nav-count-registry").textContent = app.registryCount;
+    }).catch(() => {}),
     triggerImport: () => $("global-file-import").click(),
     importFile,
-    setSnapshot: (id) => { app.snapshotId = id; refreshData(false); },
-    setHistoryHours: (hours) => { app.historyHours = hours; refreshData(false); },
+    setSnapshot: (id) => { app.snapshotId = id; refreshData(false, true); },
+    setHistoryHours: (hours) => { app.historyHours = hours; refreshData(false, true); },
   };
 
   switch (app.route) {
@@ -183,6 +223,7 @@ function renderActiveView() {
     case "host": renderHostView(root, ctx); break;
     case "accounts": renderAccountsView(root, ctx); break;
     case "users": renderUsersView(root, ctx); break;
+    case "registry": renderRegistryView(root, ctx); break;
     case "alerts": renderAlertsView(root, ctx); break;
     case "settings": renderSettingsView(root, ctx); break;
     default: renderFleetView(root, ctx);
@@ -196,8 +237,10 @@ function onRouteChange() {
     app.selectedHost = hostParam;
     app.snapshotId = null;
   }
+  const portal = $("modal-portal");
+  if (portal) portal.innerHTML = "";
   closeMobileSidebar();
-  refreshData(true);
+  refreshData(true, true);
 }
 
 // --- JSON Import ---
@@ -323,10 +366,21 @@ async function boot() {
 
   window.addEventListener("hashchange", onRouteChange);
   window.addEventListener("resize", () => {
-    if (app.route === "fleet" || app.route === "host" || app.route === "accounts") {
+    if (!isUserBusy() && (app.route === "fleet" || app.route === "host" || app.route === "accounts")) {
       renderActiveView();
     }
   });
+
+  // Flush any deferred background refresh right after a modal closes
+  const modalPortal = $("modal-portal");
+  if (modalPortal) {
+    new MutationObserver(() => {
+      if (app.pendingRender && !isUserBusy()) {
+        app.pendingRender = false;
+        renderActiveView();
+      }
+    }).observe(modalPortal, { childList: true });
+  }
 
   // Periodic safety refresh (updates relative timestamps & stale detection)
   setInterval(() => {

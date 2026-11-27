@@ -20,6 +20,7 @@ export function renderAccountsView(root, ctx) {
   }
 
   const rep = latest.report;
+  const ownerMap = latest.owner_map || {};
   const allAccounts = rep.usage_by_account || [];
   const onlineUsers = new Set((rep.online_now || []).map((o) => o.user));
 
@@ -135,9 +136,17 @@ export function renderAccountsView(root, ctx) {
                   if (u.zombies > 0) flags.push(`<span class="badge badge-warn">${u.zombies} ZOMBIE</span>`);
                   if (!flags.length) flags.push(`<span class="badge badge-muted">Bình thường</span>`);
 
+                  const owner = ownerMap[u.username];
+                  const ownerSub = owner
+                    ? `<div class="muted-sm" style="margin-top:2px">${esc(owner.group_name || (owner.account_type === "key_member" ? "Key Member" : "Nhóm SV"))}${owner.members?.length ? ` · ${esc(owner.members.map((m) => m.full_name).join(", "))}` : ""}</div>`
+                    : "";
+
                   const mainRow = `
                     <tr class="clickable" data-toggle-acc="${esc(u.username)}">
-                      <td class="mono"><span class="muted-sm" style="margin-right:6px">${exp ? "▾" : "▸"}</span><strong>${esc(u.username)}</strong></td>
+                      <td class="mono">
+                        <div><span class="muted-sm" style="margin-right:6px">${exp ? "▾" : "▸"}</span><strong>${esc(u.username)}</strong></div>
+                        ${ownerSub}
+                      </td>
                       <td class="num">${Number(u.cpu_pct || 0).toFixed(1)}%</td>
                       <td class="num">${fmtMB(u.mem_mb)}</td>
                       <td class="num">${u.gpu_mem_mb > 0 ? `<strong style="color:var(--violet)">${fmtMB(u.gpu_mem_mb)}</strong>` : "—"}</td>

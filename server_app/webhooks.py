@@ -13,7 +13,7 @@ SEV_RANK = {"info": 1, "warning": 2, "critical": 3}
 
 def _build_payload(url: str, host: str, alerts: list[dict]) -> dict:
     lines = [f"[{a['severity'].upper()}][{a['tag']}] {a['message']}" for a in alerts]
-    summary = f"AccountHubIEC Alert on `{host}` ({len(alerts)} new):\n" + "\n".join(f"- {l}" for l in lines)
+    summary = f"Cảnh báo AccountHubIEC trên `{host}` ({len(alerts)} cảnh báo mới):\n" + "\n".join(f"- {l}" for l in lines)
     lower = url.lower()
     if "discord.com/api/webhooks" in lower or "discordapp.com/api/webhooks" in lower:
         return {"content": summary[:1950]}

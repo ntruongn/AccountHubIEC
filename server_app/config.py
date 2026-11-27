@@ -37,6 +37,24 @@ def _warn_if_loose_permissions(path: Path, has_secrets: bool) -> None:
 
 
 @dataclass
+class SmtpConfig:
+    enabled: bool = False
+    host: str = ""
+    port: int = 587
+    use_tls: bool = True
+    use_ssl: bool = False
+    username: str = ""
+    password: str = ""
+    from_email: str = ""
+    admin_emails: list[str] = field(default_factory=list)
+    cc_admin: bool = True
+    auto_send: bool = False
+    auto_min_severity: str = "warning"
+    cooldown_minutes: int = 240
+    timeout: int = 15
+
+
+@dataclass
 class AppConfig:
     host: str = "0.0.0.0"
     port: int = 8443
@@ -53,6 +71,9 @@ class AppConfig:
     tls_require_client_cert: bool = False
     require_hmac: bool = False
     hmac_max_skew: int = 300
+
+    # SMTP email notifications (secrets live in server_config.json, chmod 600)
+    smtp: SmtpConfig = field(default_factory=SmtpConfig)
 
     stale_seconds: int = 180
     retain_days: int = 14
@@ -88,6 +109,7 @@ class AppConfig:
         tls = raw.get("tls") or {}
         sec = raw.get("security") or {}
         storage = raw.get("storage") or {}
+        smtp_raw = raw.get("smtp") or {}
 
         tls_cert = _resolve_path(cfg_dir, str(tls.get("cert") or ""))
         tls_key = _resolve_path(cfg_dir, str(tls.get("key") or ""))
@@ -96,11 +118,35 @@ class AppConfig:
 
         token = str(sec.get("token") or "")
         admin_pw = str(sec.get("admin_password") or "")
+        smtp_pw = str(smtp_raw.get("password") or "")
         session_secret = str(sec.get("session_secret") or os.environ.get("SESSION_SECRET") or "")
         if not session_secret:
             session_secret = os.urandom(32).hex()
 
-        _warn_if_loose_permissions(cfg_file, has_secrets=bool(token or admin_pw))
+        _warn_if_loose_permissions(cfg_file, has_secrets=bool(token or admin_pw or smtp_pw))
+
+        admin_emails_raw = smtp_raw.get("admin_emails") or []
+        if isinstance(admin_emails_raw, str):
+            admin_emails = [x.strip() for x in admin_emails_raw.split(",") if x.strip()]
+        else:
+            admin_emails = [str(x).strip() for x in admin_emails_raw if str(x).strip()]
+
+        smtp_cfg = SmtpConfig(
+            enabled=bool(smtp_raw.get("enabled", False)),
+            host=str(smtp_raw.get("host") or "").strip(),
+            port=int(smtp_raw.get("port") or 587),
+            use_tls=bool(smtp_raw.get("use_tls", True)),
+            use_ssl=bool(smtp_raw.get("use_ssl", False)),
+            username=str(smtp_raw.get("username") or "").strip(),
+            password=smtp_pw,
+            from_email=str(smtp_raw.get("from_email") or "").strip(),
+            admin_emails=admin_emails,
+            cc_admin=bool(smtp_raw.get("cc_admin", True)),
+            auto_send=bool(smtp_raw.get("auto_send", False)),
+            auto_min_severity=str(smtp_raw.get("auto_min_severity") or "warning").lower(),
+            cooldown_minutes=max(1, int(smtp_raw.get("cooldown_minutes", 240))),
+            timeout=max(5, int(smtp_raw.get("timeout", 15))),
+        )
 
         imports = [_resolve_path(cfg_dir, str(p)) for p in (raw.get("import_files") or []) if p]
 
@@ -118,6 +164,7 @@ class AppConfig:
             tls_require_client_cert=bool(tls.get("require_client_cert", False)),
             require_hmac=bool(sec.get("require_hmac", False)),
             hmac_max_skew=max(30, int(sec.get("hmac_max_skew", 300))),
+            smtp=smtp_cfg,
             stale_seconds=max(10, int(storage.get("stale_seconds", 180))),
             retain_days=max(1, int(storage.get("retain_days", 14))),
             max_per_host=max(100, int(storage.get("max_per_host", 10000))),
